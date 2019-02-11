@@ -1,0 +1,199 @@
+﻿<script src="~/Scripts/jquery-3.3.1.min.js"></script>
+<script src="~/Scripts/vue.min.js"></script>
+<script src="~/Scripts/moment.min.js"></script>
+
+<script>
+
+    // provide the initial data with this first response
+    const trains = JSON.parse('@Html.Raw(Json.Encode(ViewBag.Trains))', json_reviver);
+
+    // vue app source-of-truth
+    const truth = {
+        trains: trains,
+        fsm: new Fsm(do_select_train),
+        selected_train: null,
+        selected_seat_type: null
+    };
+
+    const seat_types = { window: 0, aisle: 1 };
+    const seat_names = ['window', 'aisle'];
+
+    function switch_seat_preference() {
+        truth.selected_seat_type = !truth.selected_seat_type + 0;
+    }
+
+    // https://stackoverflow.com/questions/726334/asp-net-mvc-jsonresult-date-format
+    function json_reviver(key, value) {
+        if (typeof value === 'string') {
+            var d = /\/Date\((\d*)\)\//.exec(value);
+            return (d) ? new Date(+d[1]) : value;
+        }
+        return value;
+    }
+
+    // a simple state machine class
+    function Fsm(initial_state) {
+        this.state = initial_state;
+    }
+
+    Fsm.prototype.dispatch = function (sig) {
+        this.state(sig);
+    };
+
+    Fsm.prototype.transition = function (target_state) {
+        this.state('--exit');
+        this.state = target_state;
+        this.state('--enter');
+    };
+
+    function do_select_train(sig) {
+        if (sig == 'train-selected') {
+            truth.fsm.transition(do_select_seat);
+        }
+    }
+
+    function do_select_different_train(sig) {
+        if (sig == 'train-selected') {
+            truth.fsm.transition(do_select_seat);
+        }
+    }
+
+    function do_select_seat(sig) {
+        if (sig == 'seat-selection-success') {
+            truth.fsm.transition(do_complete);
+        } else if (sig == 'seat-selection-failure') {
+            truth.fsm.transition(do_accept_other_seat);
+        }
+    }
+
+    function do_accept_other_seat(sig) {
+        if (sig == '--enter') {
+            switch_seat_preference();
+        } else if (sig == 'seat-selection-success') {
+            truth.fsm.transition(do_complete);
+        } else if (sig == 'seat-selection-failure') {
+            truth.fsm.transition(do_seats_unavailable);
+        }
+    }
+
+    function do_seats_unavailable(sig) {
+        if (sig == 'clicked-continue') {
+            truth.fsm.transition(do_select_different_train);
+        }
+    }
+
+    function do_complete(sig) {
+        if (sig == 'restart') {
+            truth.fsm.transition(do_select_train);
+        }
+    }
+
+    function time_format(date) {
+        return moment(date).format('h:mm a');
+    }
+</script>
+
+<div id="app">
+
+    <div id="app-4">
+
+        <div v-if="fsm.state == do_select_train">
+            <div class="jumbotron">
+                <h1>Choose a train</h1>
+            </div>
+            <div v-for="(train, index) in trains">
+                <a class="btn btn-default btn-lg" href="javascript:" v-text="train.Destination" v-on:click.prevent="selectTrain(index)"></a> {{ time_format(train.DepartureTime) }}
+            </div>
+        </div>
+
+        <div v-if="fsm.state == do_select_different_train">
+            <div class="jumbotron">
+                <h1>Choose a different train</h1>
+            </div>
+            <div v-for="(train, index) in trains">
+                <a class="btn btn-default btn-lg" href="javascript:" v-text="train.Destination" v-on:click.prevent="selectTrain(index)"></a> {{ time_format(train.DepartureTime) }}
+            </div>
+        </div>
+
+        <div v-if="fsm.state == do_select_seat">
+            <div class="jumbotron">
+                <h1>Choose seat type</h1>
+            </div>
+            <a class="btn btn-default btn-lg" href="javascript:" v-on:click.prevent="selectSeatType(seat_types.window)">window</a>
+            <a class="btn btn-default btn-lg" href="javascript:" v-on:click.prevent="selectSeatType(seat_types.aisle)">aisle</a>
+        </div>
+
+        <div v-if="fsm.state == do_accept_other_seat">
+            <div class="jumbotron">
+                <h1>Seat type unavailable.</h1>
+            </div>
+            <div>
+                Accept Other Seat?
+            </div>
+            <a class="btn btn-default btn-lg" href="javascript:" v-on:click.prevent="selectSeatType(truth.selected_seat_type)" v-text="seat_names[truth.selected_seat_type]"></a>
+        </div>
+
+        <div v-if="fsm.state == do_seats_unavailable">
+            <div class="jumbotron">
+                <h1>No seats available!</h1>
+            </div>
+            <div>
+                You will need to select a new train.
+            </div>
+            <a class="btn btn-default btn-lg" href="javascript:" v-on:click.prevent="fsm.dispatch('clicked-continue')">continue</a>
+        </div>
+
+        <div v-if="fsm.state == do_complete">
+            <div class="jumbotron">
+                <h1>Seat reserved successfully</h1>
+            </div>
+            <a class="btn btn-default btn-lg" href="javascript:" v-on:click.prevent="fsm.dispatch('restart')">restart</a>
+        </div>
+
+    </div>
+</div>
+
+<script>
+    var vue_app = new Vue({
+        el: '#app',
+        data: truth,
+        methods: {
+            selectTrain: function (train_id) {
+                console.log('[select train]', train_id);
+                truth.selected_train = train_id;
+                truth.fsm.dispatch('train-selected');
+            },
+            selectSeatType: function (seat_type) {
+                console.log('[select seat type]', seat_type);
+                truth.selected_seat_type = seat_type;
+
+                request_seat(truth.selected_train, truth.selected_seat_type);
+            }
+        }
+    });
+
+    function request_seat(train_id, seat_type) {
+        console.log('[request_seat]', train_id, seat_type);
+
+        $.ajax({
+            dataType: "json",
+            contentType: "application/json; charset=UTF-8",
+            processData: false,
+            method: 'POST',
+            url: '/api/SeatRequest?trainId=' + train_id + '&seatType=' + seat_type,
+            complete: function (jqXHR, status) {
+                //console.log('[ajax complete]', jqXHR, status);
+            },
+            success: function (json, status, jqXHR) {
+                if (json === true) {
+                    truth.fsm.dispatch('seat-selection-success');
+                } else {
+                    truth.fsm.dispatch('seat-selection-failure');
+                }
+            },
+            error: function (jqXHR, status, error) {
+                console.error('[request_seat ajax error]', jqXHR, status, error);
+            }
+        });
+    }
+</script>
